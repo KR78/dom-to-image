@@ -12,6 +12,12 @@
         imagePlaceholder: undefined,
         // Default cache bust is false, it will use the cache
         cacheBust: false,
+        // Default proxy config is false
+        proxy: false,
+        // Default proxy config is false
+        debug: false,
+        // Default timeout
+        timeout: 30000,
         // Default cors config is to request the image address directly
         corsImg: undefined
     };
@@ -21,6 +27,7 @@
         toPng: toPng,
         toJpeg: toJpeg,
         toBlob: toBlob,
+        toCanvas: toCanvas,
         toPixelData: toPixelData,
         impl: {
             fontFaces: fontFaces,
@@ -51,12 +58,6 @@
      * @param {String} options.imagePlaceholder - dataURL to use as a placeholder for failed images, default behaviour is to fail fast on images we can't fetch
      * @param {Boolean} options.cacheBust - set to true to cache bust by appending the time to the request url
      * @return {Promise} - A promise that is fulfilled with a SVG image data URL
-     * @param {Object} options.corsImg - When the image is restricted by the server from cross-domain requests, the proxy address is passed in to get the image
-     * @param {Object} options.corsImg - When the image is restricted by the server from cross-domain requests, the proxy address is passed in to get the image
-     *         - @param {String} url - eg: https://cors-anywhere.herokuapp.com/
-     *         - @param {Enumerator} method - get, post
-     *         - @param {Object} headers - eg: { "Content-Type", "application/json;charset=UTF-8" }
-     *         - @param {Object} data - post payload
      * */
     function toSvg(node, options) {
         options = options || {};
@@ -142,21 +143,45 @@
             .then(util.canvasToBlob);
     }
 
+    /**
+     * @param {Node} node - The DOM Node object to render
+     * @param {Object} options - Rendering options, @see {@link toSvg}
+     * @return {Promise} - A promise that is fulfilled with a canvas object
+     * */
+    function toCanvas(node, options) {
+        return draw(node, options || {});
+    }
+
     function copyOptions(options) {
         // Copy options to impl options for use in impl
-        if(typeof(options.imagePlaceholder) === 'undefined') {
+        if (typeof (options.imagePlaceholder) === 'undefined') {
             domtoimage.impl.options.imagePlaceholder = defaultOptions.imagePlaceholder;
         } else {
             domtoimage.impl.options.imagePlaceholder = options.imagePlaceholder;
         }
 
-        if(typeof(options.cacheBust) === 'undefined') {
+        if (typeof (options.cacheBust) === 'undefined') {
             domtoimage.impl.options.cacheBust = defaultOptions.cacheBust;
         } else {
             domtoimage.impl.options.cacheBust = options.cacheBust;
         }
 
-        if (typeof(options.corsImg) === 'undefined') {
+        if (typeof (options.proxy) === 'undefined') {
+            domtoimage.impl.options.proxy = defaultOptions.proxy;
+        } else {
+            domtoimage.impl.options.proxy = options.proxy;
+        }
+        if (typeof (options.debug) === 'undefined') {
+            domtoimage.impl.options.debug = defaultOptions.debug;
+        } else {
+            domtoimage.impl.options.debug = options.debug;
+        }
+        if (typeof (options.timeout) === 'undefined') {
+            domtoimage.impl.options.timeout = defaultOptions.timeout;
+        } else {
+            domtoimage.impl.options.timeout = options.timeout;
+        }
+        if (typeof (options.corsImg) === 'undefined') {
             domtoimage.impl.options.corsImg = defaultOptions.corsImg;
         } else {
             domtoimage.impl.options.corsImg = options.corsImg;
@@ -396,19 +421,24 @@
                 'jpeg': JPEG,
                 'gif': 'image/gif',
                 'tiff': 'image/tiff',
-                'svg': 'image/svg+xml'
+                'tile': '',
+                'svg': 'image/svg+xml',
+                'undef': null
             };
         }
 
         function parseExtension(url) {
             var match = /\.([^\.\/]*?)$/g.exec(url);
+            var tile = /\/[0-9]{1,2}\/[0-9]{1,2}\/[0-9]{1,2}$/g.exec(url);
             if (match) return match[1];
-            else return '';
+            else if (tile) return 'tile';
+            else return 'undef';
         }
 
-        function mimeType(url) {
+        function mimeType(url, headerMimeType) {
+            if (headerMimeType) return headerMimeType;
             var extension = parseExtension(url).toLowerCase();
-            return mimes()[extension] || '';
+            return mimes()[extension];
         }
 
         function isDataUrl(url) {
@@ -475,11 +505,25 @@
         }
 
         function getAndEncode(url) {
-            var TIMEOUT = 30000;
-            if(domtoimage.impl.options.cacheBust) {
+
+            function getRootUrl() {
+                return window.location.origin ? window.location.origin + '/' : window.location.protocol + '/' + window.location.host + '/';
+            }
+
+            var TIMEOUT = domtoimage.impl.options.timeout || 30000;
+
+            if (domtoimage.impl.options.cacheBust) {
                 // Cache bypass so we dont have CORS issues with cached images
                 // Source: https://developer.mozilla.org/en/docs/Web/API/XMLHttpRequest/Using_XMLHttpRequest#Bypassing_the_cache
                 url += ((/\?/).test(url) ? "&" : "?") + (new Date()).getTime();
+            }
+
+            if (domtoimage.impl.options.proxy) {
+                url = domtoimage.impl.options.proxy + ((/^http[s]?\:\/\//).test(url) ? url : (getRootUrl() + url));
+            }
+
+            if (domtoimage.impl.options.debug) {
+                console.log('[dom2img] imgURL', url);
             }
 
             return new Promise(function (resolve) {
@@ -497,10 +541,10 @@
                 ) {
                     var method = domtoimage.impl.options.corsImg.method || 'GET';
                     method = method.toUpperCase(method) === 'POST' ? 'POST' : 'GET';
-  
+
                     var reqUrl = domtoimage.impl.options.corsImg.url || '';
                     reqUrl = reqUrl.replace('#{cors}', url);
-  
+
                     var data = domtoimage.impl.options.corsImg.data || '';
                     try {
                         data = JSON.parse(JSON.stringify(data));
@@ -508,14 +552,14 @@
                         fail('corsImg.data is not available');
                         return;
                     }
-                    
+
                     Object.keys(data).forEach(function (key) {
-                        if (typeof(data[key]) === 'string') {
+                        if (typeof (data[key]) === 'string') {
                             data[key] = data[key].replace('#{cors}', url);
                         }
                     });
                     request.open(method, reqUrl, true);
-  
+
                     var isJson = false;
                     var headers = domtoimage.impl.options.corsImg.headers || {};
                     Object.keys(headers).forEach(function (key) {
@@ -531,9 +575,9 @@
                 }
 
                 var placeholder;
-                if(domtoimage.impl.options.imagePlaceholder) {
+                if (domtoimage.impl.options.imagePlaceholder) {
                     var split = domtoimage.impl.options.imagePlaceholder.split(/,/);
-                    if(split && split[1]) {
+                    if (split && split[1]) {
                         placeholder = split[1];
                     }
                 }
@@ -542,7 +586,7 @@
                     if (request.readyState !== 4) return;
 
                     if (request.status >= 400) {
-                        if(placeholder) {
+                        if (placeholder) {
                             resolve(placeholder);
                         } else {
                             fail('cannot fetch resource: ' + url + ', status: ' + request.status);
@@ -560,7 +604,7 @@
                 }
 
                 function timeout() {
-                    if(placeholder) {
+                    if (placeholder) {
                         resolve(placeholder);
                     } else {
                         fail('timeout of ' + TIMEOUT + 'ms occured while fetching resource: ' + url);
@@ -575,6 +619,8 @@
         }
 
         function dataAsUrl(content, type) {
+            console.log('[dom2image] dataasUrl => ', type)
+            if (!type && type !== '') return 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAABmJLR0QA/wD/AP+gvaeTAAAACXBIWXMAAC4jAAAuIwF4pT92AAAAB3RJTUUH4gsNCyY2EtMAuQAAABl0RVh0Q29tbWVudABDcmVhdGVkIHdpdGggR0lNUFeBDhcAAAALSURBVAjXY2AAAgAABQAB4iYFmwAAAABJRU5ErkJggg=='
             return 'data:' + type + ';base64,' + content;
         }
 
@@ -655,7 +701,7 @@
                 })
                 .then(get || util.getAndEncode)
                 .then(function (data) {
-                    return util.dataAsUrl(data, util.mimeType(url));
+                    return util.dataAsUrl(data.length ? data[0] : data, util.mimeType(url, data.length ? data[1] : null));
                 })
                 .then(function (dataUrl) {
                     return string.replace(urlAsRegex(url), '$1' + dataUrl + '$3');
@@ -772,7 +818,7 @@
                 return Promise.resolve(element.src)
                     .then(get || util.getAndEncode)
                     .then(function (data) {
-                        return util.dataAsUrl(data, util.mimeType(element.src));
+                        return util.dataAsUrl(data.length ? data[0] : data, util.mimeType(element.src, data.length ? data[1] : null));
                     })
                     .then(function (dataUrl) {
                         return new Promise(function (resolve, reject) {
